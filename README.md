@@ -66,7 +66,7 @@ The paper evaluates paramOpt in five experiments:
 
 Overall, the results show that gradient-based parameter estimation can converge faster than search-based baselines and can identify non-intuitive parameter combinations that outperform conventionally estimated process parameters.
 
-The following GIFs illustrate the second optimization step of paramOpt.
+The following GIFs illustrate the second optimization step of paramOpt (gt = ground truth, rec = estimated parameter values, guess = optimization starting value).
 
 | This is an example for finding only one parameter | This is an example for finding two parameters |
 | ------------------------------------------------- | --------------------------------------------- |
