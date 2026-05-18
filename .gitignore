@@ -1,14 +1,5 @@
 .idea
 *__pycache__*
 
-/figures/tensorboard_plot_data/*
+/logs
 
-/exp/*
-!/exp/*.json
-
-/exp_paper/*
-
-data/*
-
-docs
-temp
