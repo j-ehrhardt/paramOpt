@@ -69,16 +69,14 @@ The paper evaluates paramOpt in three experiments:
 
 Overall, the results show that gradient-based parameter estimation can converge faster than search-based baselines and can identify non-intuitive parameter combinations that outperform conventionally estimated process parameters.
 
-### Paper protocol
+### Run code
 
-The computational paper suites use 1,000 optimisation steps, every test-set sample, the four parameter subsets reported in Tables 2 and 3, and eight independent seeds. They write machine-readable results below `results/paper/` and can be launched from the repository root:
+To run paramOpt and the baselines call the following
 
 ```bash
 python code/eval.py --suite baselines
 python code/eval.py --suite gradients
 ```
-
-The repository deliberately retains the supplied datasets unchanged. See [PAPER_PROTOCOL.md](PAPER_PROTOCOL.md) for the exact executable protocol and the remaining data-provenance limitation around the paper's physical validation claim.
 
 The following GIFs illustrate the second optimization step of paramOpt (gt = ground truth, rec = estimated parameter values, guess = optimization starting value).
 
