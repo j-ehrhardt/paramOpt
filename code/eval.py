@@ -1,50 +1,14 @@
-"""
-# Experiments
+"""Reproducible computational evaluations for the paramOpt paper.
 
-# Experiment 0 - Hyperparameter Tuning on Experiment 1
-
-
-# Experiment 1 – Learning parameter to quality characteristics mapping
-
-Here we need to compare the distance metric of the models for inferring quality characteristics given an unseen testset.
-This includes:
-    + Evaluating different models. (MODEL TYPE)
-    + Training on eight seeds and evaluating on eight seeds. (MODEL STABILITY)
-    + Evaluating on different test sets (mode = 'start', 'middle', 'end', 'random'). (MODEL EXPRESSIVITY - CAN IT EXTRAPOLATE)
-Here it is totally ok to just report the distances with percentiles for the different combinations as table, as only the result counts mainly
-
-
-
-
-# Experiment 3 – Benchmarking Gradient-based Process Step Parameter Estimation with Uninformed and Heuristic Search
-
-Here we evaluate the performance of paramopt against the two other search paradimgs, uninformed search and semi informed search.
-This includes:
-    + Evaluating different methods (paramopt_wb, paramopt_bb, beamsearch, genetic_algorithm).
-    + Evaluating different models.
-    + Evaluating on all samples from the test set.
-    + Evalauting on different seeds due to the stochasticity of the optimization process.
-    + Evaluating on different starting regimes for the parameter guesses (zeros, ones, (random for multistart optimization)).
-    + Evaluating on different numbers and constellations of reconstructed variables.
-Here I want to have a table with final results and confidence bounds, as well as figures that compare the convergence process.
-
-
-# Experiment design:
-
-FOR EACH MODEL   ('ff', 'res', 'mdn', 'hres', 'tabpfn') (5)
-    FOR EACH SEED    (0-7) (8)
-        FOR EACH DATASET    (ds1-ds6) (6)
-            FOR EACH SELECTION_MODE_TEST_SET   (start; middle; end; random) (4)
-                TRAIN A MODEL ---------------------------------------------------------------------------------------------- LOG_EXP1: LIST(TRAIN_ERRORS), LIST(VAL_ERRORS), LIST(TEST_ERRORS)
-
-                FOR ESTIMATION METHOD (paramopt; beam_search; genetic_algorithm) (3)
-                    FOR EACH CONSTELLATION OF RECONSTRUCTION SCENARIO (tff; ftf; ttt; ...) (7)
-                        FOR EACH STARTING REGIME (random) (1)
-                            OPTIMIZE INPUT PARAMETERS OF THE TEST SET ------------------------------------------------------ LOG_EXP3: LIST OF PARAM VALUES DURING RECONSTRUCTION AND START_PARAM AND GOAL_PARAM
+The baseline suite reproduces Table 2's comparison on the six datasets.  The
+gradient suite reproduces Table 3's MLP/Res/HRes/TabPFN comparison on dsRS1.
+Each uses eight independent seeds, all selected test samples, a 1,000-step
+budget, and the four parameter masks reported in the manuscript.
 """
 
 import json
 import os
+from pathlib import Path
 
 import torch
 
@@ -52,6 +16,15 @@ from train import *
 from opt import *
 
 import argparse
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PAPER_PARAMETER_CONSTELLATIONS = [
+    [True, False, False],       # amplitude
+    [False, True, False],       # time / feed rate
+    [False, True, True],        # time / feed rate and force
+    [True, True, True],         # all machine parameters
+]
 
 
 class ExperimentRun():
@@ -86,7 +59,7 @@ class ExperimentRun():
             "ID": f"{model_type}_{dataset_id}_{testset_selection}_{seed}",
             "DS_ID": f"{dataset_id}",
             "SEED": seed,
-            "DATA_DIR": f"../data/{dataset_id}/usw.csv",
+            "DATA_DIR": str(REPO_ROOT / 'data' / dataset_id / 'usw.csv'),
             "MODEL_TYPE": f"{model_type}",
             "TESTSET_SELECTION": f"{testset_selection}",
             "BATCH_SIZE": batch_size,
@@ -108,21 +81,23 @@ class ExperimentRun():
             "OPT_LR": 0.05,
             "OPT_MOMENTUM": 0.1,
             "OPT_THRESHOLD": 0.1,
-            "OPT_MAX_CYCLES": 500,
+            "OPT_MAX_CYCLES": 1000,
             "OPT_MAX_CON_CYCLES": 200,
+            "OPT_EARLY_STOP": False,
+            "OPT_RESTARTS": 1,
             "OPT_PATIENCE": 25}
         return hparam
 
     def _init_dirs(self, model_type:str, dataset_id:str, testset_selection:str):
         # dirs for exp1
-        save_path_exp1 = f'../exp_paper/exp1/{dataset_id}/{model_type}/{testset_selection}'
-        os.makedirs(save_path_exp1, exist_ok=True)
+        save_path_exp1 = REPO_ROOT / 'results' / 'paper' / 'exp1' / dataset_id / model_type / testset_selection
+        save_path_exp1.mkdir(parents=True, exist_ok=True)
 
         # dirs for exp3
-        save_path_exp3 = f'../exp_paper/exp3/{dataset_id}/{model_type}/{testset_selection}'
-        os.makedirs(save_path_exp3, exist_ok=True)
+        save_path_exp3 = REPO_ROOT / 'results' / 'paper' / 'exp3' / dataset_id / model_type / testset_selection
+        save_path_exp3.mkdir(parents=True, exist_ok=True)
 
-        return save_path_exp1, save_path_exp3
+        return str(save_path_exp1), str(save_path_exp3)
 
     def _save_results(self, hparam:dict, results_dict:dict, save_path:str, dataset_id=None):
         file_name = hparam['ID']
@@ -185,7 +160,7 @@ class ExperimentRun():
     def experiment(self, hparam:dict, dataset_id:str, parameter_constellation:list, parameter_initialization:str):
         hparam = hparam.copy()
         hparam['DS_ID'] = dataset_id
-        hparam['DATA_DIR'] = f"../data/{dataset_id}/usw.csv"
+        hparam['DATA_DIR'] = str(REPO_ROOT / 'data' / dataset_id / 'usw.csv')
 
         data_module = DataModuleUsw(hparam=hparam, modus=hparam['TESTSET_SELECTION'], scaling=False)
         dl_test = data_module.get_test_dataloader()
@@ -195,30 +170,25 @@ class ExperimentRun():
         logging_x_guess = []
         logging_y_prediction = []
 
-        i = 0
         for x_gt, y_gt in dl_test:
-            if i > 7:
-                break
-            else:
-                opt_module = OptModule(hparam=hparam, model=self.model)
-                x_guess = self._init_parameter_guesses(x_gt=x_gt, mask=parameter_constellation, method=parameter_initialization)
+            opt_module = OptModule(hparam=hparam, model=self.model)
+            x_guess = self._init_parameter_guesses(x_gt=x_gt, mask=parameter_constellation, method=parameter_initialization)
 
-                y_target = y_gt if hparam['OPT_OBJECTIVE'] == 'target_match' else None
-                (logging_x_ground_truth_sample,
-                 logging_y_ground_truth_sample,
-                 logging_x_guess_sample,
-                 logging_y_prediction_sample) = opt_module.find_params(
-                    x_guess=x_guess,
-                    x_gt=x_gt,
-                    y_gt=y_target,
-                    opt_vars=parameter_constellation,
-                )
+            y_target = y_gt if hparam['OPT_OBJECTIVE'] == 'target_match' else None
+            (logging_x_ground_truth_sample,
+             logging_y_ground_truth_sample,
+             logging_x_guess_sample,
+             logging_y_prediction_sample) = opt_module.find_params(
+                x_guess=x_guess,
+                x_gt=x_gt,
+                y_gt=y_target,
+                opt_vars=parameter_constellation,
+            )
 
-                logging_x_ground_truth.append(logging_x_ground_truth_sample)
-                logging_y_ground_truth.append(logging_y_ground_truth_sample)
-                logging_x_guess.append(logging_x_guess_sample)
-                logging_y_prediction.append(logging_y_prediction_sample)
-            i += 1
+            logging_x_ground_truth.append(logging_x_ground_truth_sample)
+            logging_y_ground_truth.append(logging_y_ground_truth_sample)
+            logging_x_guess.append(logging_x_guess_sample)
+            logging_y_prediction.append(logging_y_prediction_sample)
 
         results_dict = {
             "ID": "",
@@ -239,8 +209,7 @@ class ExperimentRun():
         hparam['MODEL_TYPE'] = model
         hparam['METHOD'] = parameter_estimation_method
 
-        parameter_constellations = [[False, True, True], [False, False, True], [False, True, False], [True, False, False],
-                                    [True, True, False], [True, False, True], [True, True, True]]
+        parameter_constellations = PAPER_PARAMETER_CONSTELLATIONS
         parameter_initializations = ['random']
         source_dataset_id = hparam['DS_ID']
         for parameter_constellation in parameter_constellations:
@@ -277,63 +246,61 @@ class ExperimentRun():
 
 
 
-if __name__ == '__main__':
+def run_paper_suite(suite: str, testset_selection: str = 'end'):
+    """Execute the two computational evaluations reported in the paper.
+
+    The physical open-loop validation is intentionally not included here: it
+    requires a welding experiment and must not be represented as a software
+    result.
     """
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_type", required=True)
-    parser.add_argument("--estimation_method", required=True)
-    parser.add_argument("--dataset_id", required=True)
-    parser.add_argument("--testset_selection", required=True)
-    parser.add_argument("--seed", type=int, default=0)
+    seeds = range(8)
+    if suite == 'baselines':
+        configurations = [
+            ('res', dataset_id, method)
+            for dataset_id in ['ds1', 'ds2', 'ds3', 'ds4', 'ds5', 'ds6']
+            for method in ['paramopt', 'beam_search', 'genetic_algorithm']
+        ]
+    elif suite == 'gradients':
+        configurations = [
+            (model_type, 'ds1', 'paramopt')
+            for model_type in ['ff', 'res', 'hres', 'tabpfn']
+        ]
+    else:
+        raise ValueError(f'Unknown paper suite: {suite}')
+
+    for model_type, dataset_id, method in configurations:
+        for seed in seeds:
+            ExperimentRun(
+                model_type=model_type,
+                seed=seed,
+                dataset_id=dataset_id,
+                testset_selection=testset_selection,
+                parameter_estimation_method=method,
+                optimization_objective='target_match',
+            )
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Run paramOpt evaluations.')
+    parser.add_argument('--suite', choices=['baselines', 'gradients'])
+    parser.add_argument('--model-type', choices=['ff', 'res', 'hres', 'tabpfn'])
+    parser.add_argument('--estimation-method', choices=['paramopt', 'beam_search', 'genetic_algorithm'])
+    parser.add_argument('--dataset-id', choices=['ds1', 'ds2', 'ds3', 'ds4', 'ds5', 'ds6'])
+    parser.add_argument('--testset-selection', choices=['start', 'middle', 'end', 'random'], default='end')
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--objective', choices=sorted(VALID_OBJECTIVES), default='target_match')
     args = parser.parse_args()
 
-    ExperimentRun(
-        model_type=args.model_type,
-        seed=args.seed,
-        dataset_id=args.dataset_id,
-        testset_selection=args.testset_selection,
-        parameter_estimation_method=args.estimation_method,
-    )
-    
-
-    model_types = ['ff', 'res', 'hres', 'tabpfn']
-    estimation_methods = ['paramopt', 'beam_search', 'genetic_algorithm']
-    dataset_ids = ['ds1', 'ds2', 'ds3', 'ds4', 'ds5', 'ds6']
-    testset_selections = ['start', 'end', 'random']
-    seeds = [0, 1, 2, 3, 4, 5, 6, 7, 8]
-
-    seed = 0
-
-    for model_type in model_types:
-        for estimation_method in estimation_methods:
-            for dataset_id in dataset_ids:
-                for testset_selection in testset_selections:
-                    exp_run_class = ExperimentRun(model_type, seed, dataset_id, testset_selection, estimation_method)
-
-    """
-    """
-    # model_tpye x esimation_method x dataset_id x test_set_selection x seed
-
-
-    model_type = 'ff'
-    seed = 0
-    dataset_id = 'ds1'
-    testset_selection = 'start'
-    parameter_estimation_method = 'paramopt'
-
-
-    exp_run_class = ExperimentRun(model_type, seed, dataset_id, testset_selection, parameter_estimation_method)
-    """
-
-    model_types = ['tabpfn'] # ['hres', 'tabpfn'] # ['ff', 'res'] #
-    estimation_methods = ['paramopt', 'beam_search', 'genetic_algorithm']
-    dataset_ids = ['ds1', 'ds2', 'ds3', 'ds4', 'ds5', 'ds6']
-    testset_selections = ['end'] #, ['start', 'end', 'random']
-    seeds = [0] #, 1, 2, 3, 4, 5, 6, 7, 8]
-
-    for model_type in model_types:
-        for seed in seeds:
-            for dataset_id in dataset_ids:
-                for testset_selection in testset_selections:
-                    for estimation_method in estimation_methods:
-                        exp_run_class = ExperimentRun(model_type, seed, dataset_id, testset_selection, estimation_method)
+    if args.suite:
+        run_paper_suite(args.suite, args.testset_selection)
+    elif args.model_type and args.estimation_method and args.dataset_id:
+        ExperimentRun(
+            model_type=args.model_type,
+            seed=args.seed,
+            dataset_id=args.dataset_id,
+            testset_selection=args.testset_selection,
+            parameter_estimation_method=args.estimation_method,
+            optimization_objective=args.objective,
+        )
+    else:
+        parser.error('Specify --suite or all of --model-type, --estimation-method, and --dataset-id.')

@@ -33,7 +33,7 @@ def objective_loss(loss, prediction, target, objective):
 
 
 class GeneticAlgorithm:
-    def __init__(self, hparam, model, model_type):
+    def __init__(self, hparam, model, model_type, min_bound=None, max_bound=None):
         self.hparam = hparam
         self.model = load_model(self.hparam['MODEL_DIR'], model_type=model_type) if model is None else model
 
@@ -49,6 +49,17 @@ class GeneticAlgorithm:
 
         self.loss = nn.MSELoss()
         self.objective = hparam.get('OPT_OBJECTIVE', OBJECTIVE_TARGET_MATCH)
+        self.min_bound = min_bound
+        self.max_bound = max_bound
+
+    def project_individual(self, individual, opt_vars):
+        """Keep every candidate in the same feasible region as paramOpt."""
+        if self.min_bound is None or self.max_bound is None:
+            return individual
+        for i, optimise in enumerate(opt_vars):
+            if optimise:
+                individual[i] = min(max(individual[i], self.min_bound[i]), self.max_bound[i])
+        return individual
 
     def init_individual(self, x_in, opt_vars, lower_bound=-1, upper_bound=1, method='random'):
         individual = x_in[:]
@@ -70,7 +81,7 @@ class GeneticAlgorithm:
                 if opt:
                     individual[i] = values[index % len(values)]
                     index += 1
-        return individual
+        return self.project_individual(individual, opt_vars)
 
     def init_population(self, x_in, opt_vars):
         self.opt_vars = opt_vars
@@ -109,7 +120,7 @@ class GeneticAlgorithm:
         for i, opt in enumerate(opt_vars):
             if opt and random.uniform(0, 1) < mutation_rate:
                 individual[i] = individual[i] + random.uniform(-5.0, 5.0)
-        return individual
+        return self.project_individual(individual, opt_vars)
 
     def step(self, x_gt, y_gt, i):
         if i == 0:
@@ -171,12 +182,24 @@ class GeneticAlgorithm:
 
 
 class BeamSearch:
-    def __init__(self, hparam, model, model_type):
+    def __init__(self, hparam, model, model_type, min_bound=None, max_bound=None):
         self.hparam = hparam
         self.model = load_model(self.hparam['MODEL_DIR'], model_type) if model is None else model
         if 'tabpfn' not in model_type: self.model.eval()
         self.loss = nn.MSELoss()
         self.objective = hparam.get('OPT_OBJECTIVE', OBJECTIVE_TARGET_MATCH)
+        self.min_bound = min_bound
+        self.max_bound = max_bound
+
+    def project_candidate(self, candidate):
+        if self.min_bound is None or self.max_bound is None:
+            return candidate
+        for idx, optimise in enumerate(self.hparam['FOR_OPT_PARAMS']):
+            if optimise:
+                candidate[0][idx] = candidate[0][idx].clamp(
+                    min=self.min_bound[idx], max=self.max_bound[idx]
+                )
+        return candidate
 
     def init_beam(self, x_in):
         # set beam parameters
@@ -189,6 +212,7 @@ class BeamSearch:
         for idx in range(len(intial_vector[0])):
             if self.hparam["FOR_OPT_PARAMS"][idx] == True:
                 intial_vector[0][idx] = 0
+        intial_vector = self.project_candidate(intial_vector)
         initial_beam = [(intial_vector, 1.0)]
         return initial_beam
 
@@ -202,6 +226,7 @@ class BeamSearch:
                     if self.hparam["FOR_OPT_PARAMS"][idx] == True:
                         # defines the exploration around the beam
                         new_candidate[0][idx] = new_candidate[0][idx] + (np.random.uniform(*(-1,1)) * self.perturbation)
+                new_candidate = self.project_candidate(new_candidate)
 
                 # Evaluate the candidate using the model
                 y_hat = self.model(new_candidate)
@@ -228,7 +253,12 @@ class ParamOpt:
         self.hparam = hparam
         self.model_type = model_type
         self.model = load_model(self.hparam['MODEL_DIR'], self.model_type) if model is None else model
-        if 'tabpfn' not in self.model_type: self.model.eval()
+        if 'tabpfn' not in self.model_type:
+            self.model.eval()
+            # Optimisation is over the input vector only.  Freezing explicitly
+            # avoids accumulating unused surrogate-weight gradients.
+            for parameter in self.model.parameters():
+                parameter.requires_grad_(False)
         self.loss = nn.MSELoss()
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.objective = hparam.get('OPT_OBJECTIVE', OBJECTIVE_TARGET_MATCH)
@@ -241,22 +271,29 @@ class ParamOpt:
         #print(f'min bound {self.min_bound}, max bound {self.max_bound}')
 
     def init_observer(self, hparam):
-        data_module = DataModuleUsw(hparam=hparam, modus='random', scaling=False)
-        train_loader, _ = data_module.get_train_dataloaders()
+        """Return deterministic, documented optimisation bounds.
 
-        # Extract all data from the DataLoader
-        all_x = []
-        for batch_x, batch_y in train_loader:
-            all_x.append(batch_x)
+        ``OPT_BOUNDS`` may supply physical limits as ``(lower, upper)``.  If it
+        is omitted, use the complete cleaned DoE rather than a stochastic,
+        drop-last training loader.  This makes every method operate on the same
+        feasible region and avoids a different bound for each test sample.
+        """
+        configured_bounds = hparam.get('OPT_BOUNDS')
+        if configured_bounds is not None:
+            lower, upper = configured_bounds
+            if len(lower) != hparam['INPUT_DIM'] or len(upper) != hparam['INPUT_DIM']:
+                raise ValueError('OPT_BOUNDS must contain one lower and upper value per input feature.')
+            return list(lower), list(upper)
 
-        # Concatenate all batches
-        training_data = torch.cat(all_x, dim=0)
-
-        # Compute bounds across all samples
-        min_bounds = training_data.min(dim=0)[0].tolist()
-        max_bounds = training_data.max(dim=0)[0].tolist()
-
-        return min_bounds, max_bounds
+        data_module = DataModuleUsw(hparam=hparam, modus='end', scaling=False)
+        cleaned_data = data_module.clean(data_module.load_data())
+        machine_parameters = torch.tensor(
+            cleaned_data.iloc[:, :-1].to_numpy(), dtype=torch.float32
+        )
+        return (
+            machine_parameters.min(dim=0)[0].tolist(),
+            machine_parameters.max(dim=0)[0].tolist(),
+        )
 
     def init_optimizer(self, x_guess, lr=None):
         lr = lr if lr is not None else self.hparam['OPT_LR']
@@ -277,6 +314,11 @@ class ParamOpt:
 
         optimizer.zero_grad(set_to_none=True)
         return optimizer
+
+    def init_whitebox_state(self, x_guess):
+        """Create one optimised input tensor and one persistent optimizer."""
+        x_parameter = nn.Parameter(x_guess.detach().clone())
+        return x_parameter, self.init_optimizer(x_parameter, lr=self.hparam['OPT_LR'])
 
     def predict_tabpfn(self, x_t: torch.Tensor):
         x_np = x_t.detach().cpu().numpy()
@@ -318,7 +360,7 @@ class ParamOpt:
                     x_guess[0, idx].clamp_(min=self.min_bound[idx], max=self.max_bound[idx])
         return x_guess
 
-    def step(self, x_guess, x_gt, y_target, opt_vars):
+    def step(self, x_guess, x_gt, y_target, opt_vars, optimizer=None, fixed_values=None):
         if 'tabpfn' in self.model_type:
             x_guess, x_gt = x_guess.to('cpu'), x_gt.to('cpu')
             if y_target is not None:
@@ -333,15 +375,17 @@ class ParamOpt:
 
             x_guess, x_gt, y_hat = x_guess.to(self.device), x_gt.to(self.device), y_hat.to(self.device)
         else:
-            x_guess = [param.clone().detach().requires_grad_(True) for param in x_guess.squeeze(0)]
+            if not isinstance(x_guess, nn.Parameter):
+                x_guess, optimizer = self.init_whitebox_state(x_guess)
+            elif optimizer is None:
+                optimizer = self.init_optimizer(x_guess=x_guess, lr=self.hparam['OPT_LR'])
 
-            for i, param in enumerate(x_guess):
-                param.requires_grad_(opt_vars[i])
+            if fixed_values is None:
+                fixed_values = x_gt.detach().clone()
+            optimise_mask = torch.tensor(opt_vars, dtype=torch.bool, device=x_guess.device)
 
-            optimizer = self.init_optimizer(x_guess=x_guess, lr=self.hparam['OPT_LR'])
-
-            x_tensor = torch.stack(x_guess).unsqueeze(0)
-            y_hat = self.model(x_tensor)
+            optimizer.zero_grad(set_to_none=True)
+            y_hat = self.model(x_guess)
             if self.model_type == 'hres' or self.model_type == 'mdn':
                 y_hat = y_hat[:, 0]
 
@@ -349,15 +393,19 @@ class ParamOpt:
             loss_elem = objective_loss(self.loss, y_hat, target, self.objective)
             loss_elem.backward()
 
+            # The surrogate weights are never passed to the optimiser.  Mask
+            # gradients so the unobserved machine parameters remain fixed.
+            if x_guess.grad is not None:
+                x_guess.grad[:, ~optimise_mask] = 0
+
             optimizer.step()
 
             # projected gradient descent
             with torch.no_grad():
-                for i, param in enumerate(x_guess):
-                    if param.requires_grad:
-                        param.clamp_(min=self.min_bound[i], max=self.max_bound[i])
-
-            x_guess = torch.stack(x_guess).unsqueeze(0)
+                x_guess[:, ~optimise_mask] = fixed_values[:, ~optimise_mask]
+                for i, optimise in enumerate(opt_vars):
+                    if optimise:
+                        x_guess[:, i].clamp_(min=self.min_bound[i], max=self.max_bound[i])
 
             with torch.no_grad():
                 y_hat = self.model(x_guess)
@@ -384,9 +432,10 @@ class OptModule():
             )
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        self.GA = GeneticAlgorithm(self.hparam, self.model, self.model_type)
-        self.BS = BeamSearch(self.hparam, self.model, self.model_type)
         self.GS = ParamOpt(self.hparam, self.model, self.model_type)
+        shared_bounds = (self.GS.min_bound, self.GS.max_bound)
+        self.GA = GeneticAlgorithm(self.hparam, self.model, self.model_type, *shared_bounds)
+        self.BS = BeamSearch(self.hparam, self.model, self.model_type, *shared_bounds)
 
     def find_params(self, x_guess, x_gt, y_gt=None, opt_vars=None, lr=None):
         """
@@ -419,20 +468,14 @@ class OptModule():
         if y_gt is not None:
             y_gt = y_gt.to(self.device)
 
-        # init methods
-        if self.method == "genetic_algorithm":
-            print(f'genetic algorithm')
-            x_in = x_guess.squeeze().tolist()
-            self.GA.init_population(x_in=x_in, opt_vars=opt_vars)
-        if self.method == "beam_search":
-            print(f'beamsearch')
-            beam = self.BS.init_beam(x_in=x_guess)
-        if self.method == "paramopt":
-            print(f'paramopt | objective {self.objective} | optimizer {self.hparam["OPT"]}')
+        # Repetitions are independent restarts.  Paper-level seed variation is
+        # driven by the experiment runner; keeping this at one avoids treating
+        # sequential perturbations as independent seeds.
+        n_restarts = int(self.hparam.get('OPT_RESTARTS', 1))
+        if n_restarts < 1:
+            raise ValueError('OPT_RESTARTS must be at least one.')
+        initial_guess = x_guess.detach().clone()
 
-        prediction_variance_runs = 8 #16 TODO change back to 16
-        modus = 'input_variance' # 'dropout_variance', 'input_variance'
-        # add variance through noise and dropout then caclulating mean and variance of multple runs
         x_guess_history = []
 
         # meta logging lists
@@ -441,8 +484,15 @@ class OptModule():
         logging_x_guess = []
         logging_y_prediction = []
 
-        with tqdm(total=prediction_variance_runs, desc="progress") as pbar:
-            for var_seed in range(0, prediction_variance_runs):
+        with tqdm(total=n_restarts, desc="restarts") as pbar:
+            for restart in range(n_restarts):
+                # Reset every mutable optimisation state.  A restart must not
+                # continue from the previous restart's terminal point.
+                x_guess = initial_guess.detach().clone()
+                random.seed(self.hparam.get('SEED', 0) + restart)
+                np.random.seed(self.hparam.get('SEED', 0) + restart)
+                torch.manual_seed(self.hparam.get('SEED', 0) + restart)
+
                 # per variance logging lists
                 logging_x_ground_truth_ind = []
                 logging_y_ground_truth_ind = []
@@ -456,26 +506,18 @@ class OptModule():
                 warmup_window = 20
                 consecutive_cycles = 0
                 n_cycles = 0
-                B = x_gt.size(0)
-
-                best_losses = torch.full((B,), float('inf'), device=self.device)
-                stalls = torch.zeros(B, dtype=torch.long, device=self.device)
-
                 loss_history = []
 
-                # applying variance either in form of dropout
-                if modus == 'dropout_variance':
-                    random.seed(var_seed)
-                    torch.manual_seed(var_seed)
-                elif modus == 'input_variance':
-                    random.seed(var_seed)
-                    epsilon = random.random() * 10
-                    #x_guess = x_guess + epsilon
-                    mask = torch.tensor([1.0 if v else 0.0 for v in opt_vars], device=self.device, dtype=x_guess.dtype)
-                    x_guess = x_guess + epsilon * mask.unsqueeze(0)
+                if self.method == "genetic_algorithm":
+                    x_in = x_guess.squeeze().tolist()
+                    self.GA.init_population(x_in=x_in, opt_vars=opt_vars)
+                elif self.method == "beam_search":
+                    beam = self.BS.init_beam(x_in=x_guess)
+                elif self.method == "paramopt" and 'tabpfn' not in self.model_type:
+                    whitebox_guess, whitebox_optimizer = self.GS.init_whitebox_state(x_guess)
+                    fixed_values = x_guess.detach().clone()
 
-
-                while consecutive_cycles < max_consecutive_cycles and n_cycles < max_cycles:
+                while n_cycles < max_cycles:
                     if self.method == "genetic_algorithm":
                         x_loss, y_loss, x_guess, y_hat = self.GA.step(x_gt=x_gt, y_gt=y_gt, i=n_cycles)
                         x_guess = torch.tensor(x_guess, dtype=torch.float32, device=self.device).unsqueeze(0)
@@ -484,11 +526,14 @@ class OptModule():
                         beam, x_loss, y_loss, x_guess, y_hat = self.BS.step(beam=beam, x_gt=x_gt, y_gt=y_gt)
 
                     if self.method == "paramopt":
+                        step_guess = whitebox_guess if 'tabpfn' not in self.model_type else x_guess
                         x_loss, y_loss, x_guess, y_hat = self.GS.step(
-                            x_guess=x_guess,
+                            x_guess=step_guess,
                             x_gt=x_gt,
                             y_target=y_gt,
                             opt_vars=opt_vars,
+                            optimizer=whitebox_optimizer if 'tabpfn' not in self.model_type else None,
+                            fixed_values=fixed_values if 'tabpfn' not in self.model_type else None,
                         )
                         #x_loss, y_loss, x_guess, y_hat = x_loss.detach().tolist(), y_loss.detach.tolist(), x_guess.detach().tolist(), y_hat.detach().tolist()
                         x_loss, y_loss, x_guess, y_hat = x_loss.detach(), y_loss.detach(), x_guess.detach(), y_hat.detach()
@@ -503,20 +548,10 @@ class OptModule():
 
                     loss_history.append(y_loss_float)
 
-                    # per-sample stall tracking
-                    if n_cycles >= warmup_window:
-                        if n_cycles == warmup_window:
-                            baseline = sum(loss_history[:warmup_window]) / max(1, len(loss_history[:warmup_window]))
-                            min_delta = max(1e-6, 0.01 * baseline)
-
-                        improved = (y_loss_tensor < (best_losses - min_delta))
-                        best_losses = torch.minimum(best_losses, y_loss_tensor)
-                        stalls = torch.where(improved, torch.zeros_like(stalls), stalls + 1)
-                    else:
-                        best_losses = torch.minimum(best_losses, y_loss_tensor)
-
-                    # global “no improvement” stopping
-                    if len(loss_history) > 1:
+                    # The publication benchmark uses a fixed 1,000-step
+                    # budget.  Early stopping remains available for ordinary
+                    # use, but must be explicitly enabled in its configuration.
+                    if self.hparam.get('OPT_EARLY_STOP', True) and len(loss_history) > 1:
                         delta = abs(loss_history[-1] - loss_history[-2])  # both floats
                         threshold = self.hparam['OPT_THRESHOLD']
                         if delta <= threshold:
@@ -524,12 +559,19 @@ class OptModule():
                         else:
                             consecutive_cycles = 0
 
-                    logging_x_ground_truth_ind.append(x_gt)
-                    logging_y_ground_truth_ind.append(y_gt)
+                    logging_x_ground_truth_ind.append(x_gt.detach())
+                    logging_y_ground_truth_ind.append(None if y_gt is None else y_gt.detach())
                     logging_x_guess_ind.append(x_guess)
                     logging_y_prediction_ind.append(y_hat)
 
                     n_cycles += 1
+
+                    if (
+                        self.hparam.get('OPT_EARLY_STOP', True)
+                        and n_cycles >= warmup_window
+                        and consecutive_cycles >= max_consecutive_cycles
+                    ):
+                        break
 
 
                 x_guess_history.append(x_guess)

@@ -1,10 +1,15 @@
 import os
 import ast
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PAPER_RESULTS_ROOT = REPO_ROOT / 'results' / 'paper' / 'exp3'
 
 def pad_run(run, L):
     a = np.asarray(run)
@@ -24,46 +29,55 @@ def pad_samples(sample_list, L):
     return np.stack([np.stack([pad_run(run, L) for run in sample], axis=0) for sample in sample_list], axis=0)
 
 
-def retrieve_optimization_results_same_ds(model_type:str, dataset_id:str, testset_selection:str, optimization_setup:str, paradigm):
-    filepath = f'../../exp_hpc/exp3/{dataset_id}/{model_type}/{testset_selection}'
-
-    if paradigm == 'paramopt':
-        filename = f'{model_type}_{dataset_id}_{testset_selection}_0_on_{dataset_id}_{optimization_setup}_paramopt_RMSprop.json'
-    else:
-        filename = f'{model_type}_{dataset_id}_{testset_selection}_0_on_{optimization_setup}_{paradigm}.json'
-
-
-    file = os.path.join(filepath, filename)
-
-    with open(file, 'r') as f:
+def _load_result_arrays(file_path: Path):
+    with file_path.open('r') as f:
         results = json.load(f)
 
     x_gt_list = results['X_GROUND_TRUTH']
     x_guess_list = results['X_GUESS']
-
-    #max_L = max(max(len(s[0]) for s in x_gt_list), max(len(s[0]) for s in x_guess_list))
-    #max(max(len(s[0]) for s in x_gt_list), max(len(s[0]) for s in x_guess_list)))
-
-    #x_gt = np.stack([np.pad(np.asarray(s),((0, 0), (0, 0), (0, max_L - len(s[0])), (0, 0), (0, 0)), mode="edge") for s in x_gt_list])
-    #x_guess = np.stack([np.pad(np.asarray(s),((0, 0), (0, 0), (0, max_L - len(s[0])), (0, 0), (0, 0)), mode="edge") for s in x_guess_list])
-
     max_L = max(max(len(s[0]) for s in x_gt_list), max(len(s[0]) for s in x_guess_list))
-
-    x_gt = pad_samples(x_gt_list, max_L)
-    x_guess = pad_samples(x_guess_list, max_L)
-
-    """ very old
-    #x_gt = np.array(x_gt)
-    #x_guess = np.array(x_guess)
-
-    #x_gt = np.array(x_gt).squeeze(axis=3)
-    #x_guess = np.array(x_guess).squeeze(axis=3)
-    """
-
-    x_gt = x_gt.squeeze(axis=3)
-    x_guess = x_guess.squeeze(axis=3)
-
+    x_gt = pad_samples(x_gt_list, max_L).squeeze(axis=3)
+    x_guess = pad_samples(x_guess_list, max_L).squeeze(axis=3)
     return x_gt, x_guess
+
+
+def retrieve_optimization_results_same_ds(model_type: str, dataset_id: str,
+                                          testset_selection: str,
+                                          optimization_setup: str, paradigm: str):
+    """Load all saved seed runs for one paper-evaluation configuration.
+
+    The returned run axis is the seed axis (or seed × explicit independent
+    restart), never a chain of successive perturbations.
+    """
+    directory = PAPER_RESULTS_ROOT / dataset_id / model_type / testset_selection
+    if paradigm == 'paramopt':
+        suffix = f'_on_{dataset_id}_{optimization_setup}_paramopt_RMSprop.json'
+    else:
+        suffix = f'_on_{optimization_setup}_{paradigm}.json'
+    prefix = f'{model_type}_{dataset_id}_{testset_selection}_'
+    files = sorted(path for path in directory.glob('*.json')
+                   if path.name.startswith(prefix) and path.name.endswith(suffix))
+    if not files:
+        raise FileNotFoundError(f'No result files for {model_type}, {dataset_id}, {optimization_setup}, {paradigm}.')
+
+    arrays = [_load_result_arrays(path) for path in files]
+    n_samples = arrays[0][0].shape[0]
+    if any(x_gt.shape[0] != n_samples for x_gt, _ in arrays):
+        raise ValueError('Seed runs have different test-set sizes and cannot be aggregated.')
+
+    max_steps = max(x_guess.shape[2] for _, x_guess in arrays)
+    padded = []
+    for x_gt, x_guess in arrays:
+        if x_guess.shape[2] < max_steps:
+            pad_width = max_steps - x_guess.shape[2]
+            x_guess = np.concatenate((x_guess, np.repeat(x_guess[:, :, -1:, :], pad_width, axis=2)), axis=2)
+            x_gt = np.concatenate((x_gt, np.repeat(x_gt[:, :, -1:, :], pad_width, axis=2)), axis=2)
+        padded.append((x_gt, x_guess))
+
+    return (
+        np.concatenate([x_gt for x_gt, _ in padded], axis=1),
+        np.concatenate([x_guess for _, x_guess in padded], axis=1),
+    )
 
 
 
@@ -72,7 +86,7 @@ def build_mae_table_per_setup_with_sd(model_type: str, dataset_ids: list[str], t
     Rows: (setup, optimizer)
     Cols: ds1..ds6
 
-    Each cell summarizes final-step MAE over sample×run:
+    Each cell summarizes final-step MAE across independent seed runs:
       - mean ± sd  (if format_cells=True)
       - OR numeric columns ds_mean / ds_sd (if format_cells=False)
 
@@ -92,7 +106,7 @@ def build_mae_table_per_setup_with_sd(model_type: str, dataset_ids: list[str], t
         err = err[..., mask]              # (S,R,T,D_sel)
         mae_per_step = err.mean(axis=-1)  # (S,R,T)
         final_mae = mae_per_step[..., -1] # (S,R)
-        return final_mae.reshape(-1)      # (S*R,)
+        return final_mae.mean(axis=0)      # (R,), one test-set MAE per seed
 
     rows = []
 
@@ -190,10 +204,10 @@ def plot_optimization_results_same_ds_per_optimizer(
         err = err[..., m]                        # (S,R,T,D_sel)
 
         mae = err.mean(axis=-1)                  # (S,R,T)
-        mae_sr = mae.reshape(-1, mae.shape[-1])  # (S*R, T)
+        mae_per_seed = mae.mean(axis=0)          # (R,T)
 
-        mean = mae_sr.mean(axis=0)
-        sd   = mae_sr.std(axis=0, ddof=1) if mae_sr.shape[0] > 1 else np.zeros_like(mean)
+        mean = mae_per_seed.mean(axis=0)
+        sd   = mae_per_seed.std(axis=0, ddof=1) if mae_per_seed.shape[0] > 1 else np.zeros_like(mean)
 
         # NEW: clip steps
         if max_steps is not None:
@@ -216,7 +230,7 @@ def plot_optimization_results_same_ds_per_optimizer(
         steps = np.arange(len(mean))
         line, = ax.plot(steps, mean, linewidth=2.6, label=par)
 
-        if show_band and mae_sr.shape[0] > 1:
+        if show_band and mae_per_seed.shape[0] > 1:
             ax.fill_between(
                 steps, mean - sd, mean + sd,
                 alpha=band_alpha, color=line.get_color(), linewidth=0
@@ -361,48 +375,14 @@ def plot_optimization_results_same_ds_per_run(
 
 
 if __name__ == '__main__':
-
-    dataset_ids = ['ds1', 'ds3', 'ds5', 'ds4', 'ds6']
+    dataset_ids = ['ds1', 'ds2', 'ds3', 'ds4', 'ds5', 'ds6']
     setups = ['[True, False, False]', '[False, True, False]', '[False, True, True]', '[True, True, True]']
     paradigms = ['paramopt', 'beam_search', 'genetic_algorithm']
-
-    #df = build_mae_table_per_setup_with_sd(model_type='res', dataset_ids=dataset_ids, testset_selection='end', setups=setups, paradigms=paradigms)
-
-    #with pd.option_context("display.max_rows", None, "display.max_columns", None, "display.width", 200, "display.expand_frame_repr", False):
-    #        print(df)
-
-    #for setup in setups:
-    #    plot_optimization_results_same_ds_per_optimizer(model_type='res', dataset_id='ds1', testset_selection='end', optimization_setup=setup, paradigms=paradigms, max_steps=150, show_band=True)
-
-    """"""
-    for setup in setups:
-        for ds in dataset_ids:
-            plot_optimization_results_same_ds_per_run(
-                model_type="tabpfn",
-                dataset_id=ds,
-                testset_selection="end",
-                optimization_setup=setup,
-                paradigms=paradigms,
-                max_steps=400,
-                headline='Parameter Estimation against Baselines',
-                smooth=False,
-                show_mean=True,
-                aggregate_over_samples=True,
-            )
-
-
-    """  
-    plot_optimization_results_same_ds_per_run(
-        model_type="res",
-        dataset_id='ds3',
-        testset_selection="end",
-        optimization_setup='[False, True, False]',
+    table = build_mae_table_per_setup_with_sd(
+        model_type='res',
+        dataset_ids=dataset_ids,
+        testset_selection='end',
+        setups=setups,
         paradigms=paradigms,
-        max_steps=150,
-        headline='Parameter Estimation against Baselines',
-        smooth=False,
-        show_mean=True,
-        aggregate_over_samples=True,
     )
-    """
-    print('hurray')
+    print(table)

@@ -107,8 +107,10 @@ if __name__ == '__main__':
         "OPT_LR": 0.05,
         "OPT_MOMENTUM": 0.1,
         "OPT_THRESHOLD": 0.1,
-        "OPT_MAX_CYCLES": 200,
+        "OPT_MAX_CYCLES": 1000,
         "OPT_MAX_CON_CYCLES": 200,
+        "OPT_EARLY_STOP": False,
+        "OPT_RESTARTS": 1,
         "OPT_PATIENCE": 25,
     }
 

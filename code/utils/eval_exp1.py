@@ -11,8 +11,12 @@ Here it is totally ok to just report the distances with percentiles for the diff
 
 import os
 import json
+from pathlib import Path
 import numpy as np
 import pandas as pd
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def compute_training_metrics(y_true, y_pred):
@@ -38,13 +42,13 @@ def compute_training_metrics(y_true, y_pred):
 
 
 def retrieve_training_results(model_type: str, dataset_id: str, testset_selection: str, seeds: list):
-    filepath = f'../../exp_hpc/exp1/{dataset_id}/{model_type}/{testset_selection}/'
+    filepath = REPO_ROOT / 'results' / 'paper' / 'exp1' / dataset_id / model_type / testset_selection
 
     mses, rmses, maes, r2s = [], [], [], []
 
     for seed in seeds:
         filename = f'{model_type}_{dataset_id}_{testset_selection}_{seed}.json'
-        file = os.path.join(filepath, filename)
+        file = filepath / filename
 
         try:
             with open(file, 'r') as f:
