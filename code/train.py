@@ -4,19 +4,26 @@ import random
 from tqdm import tqdm
 import shutil
 
+import numpy as np
+import torch
+import torch.nn as nn
 from sklearn.metrics import mean_squared_error
 
-from data import *
-from model.net import *
-from tabpfn import TabPFNRegressor
-from tabpfn_extensions import AutoTabPFNRegressor
+from data.usw_data_loader import DataModuleUsw
+from model.net import HeteroscedaticResidualNet, MixtureDensityNet, Net, ResidualNet
+
+try:
+    from tabpfn import TabPFNRegressor
+    from tabpfn.constants import ModelVersion
+except ImportError:
+    TabPFNRegressor = None
+    ModelVersion = None
 
 
 class TrainModule():
     def __init__(self, hparam, modus, scaling=False):
         """
         tabpfn --> TabPFN Regressor
-        autotabpfn --> AutoTabPFN Regressor
         mdn --> MixtureDensity Model
         hres --> Heteroscedatic Residual Network
         res --> Residual Network
@@ -25,7 +32,7 @@ class TrainModule():
         self.hparam = hparam                            # all data
         self.modus = modus                              # data modus, from which part of the table is the test set selected?: start, middle, end, random
         self.scaling = scaling                          # use scaler for data
-        self.model_type = self.hparam['MODEL_TYPE']     # which model_tpye:tabpfn, autotabpfn, mdn, hres, ff, res
+        self.model_type = self.hparam['MODEL_TYPE']     # tabpfn, mdn, hres, ff, or res
 
         self.loss_l1 = nn.SmoothL1Loss()
         self.loss_mse = nn.MSELoss()
@@ -33,8 +40,7 @@ class TrainModule():
 
         self.model = None                               # model placeholder
 
-        model_devices = {'tabpfn': 'cpu', 'autotabpfn': 'cuda'}
-        self.device = model_devices.get(hparam['MODEL_TYPE'], 'cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     @staticmethod
     def init_weights(m):
@@ -77,13 +83,24 @@ class TrainModule():
         return X, Y
 
     def train_tabpfn(self, dl_train, dl_val):
+        if TabPFNRegressor is None or ModelVersion is None:
+            raise ImportError(
+                'TabPFN is required for MODEL_TYPE="tabpfn". '
+                'Create an environment from requirements.txt to install it.'
+            )
+
         x_train, y_train = self.get_tabpfn_data(dl_train)
         x_val, y_val = self.get_tabpfn_data(dl_val)
 
-        if self.model_type == 'tabpfn':
-            self.model = TabPFNRegressor()
-        elif self.model_type == 'autotabpfn':
-            self.model = AutoTabPFNRegressor(max_time=300, device=self.device)
+        if self.model_type != 'tabpfn':
+            raise ValueError(f"Unsupported TabPFN model type: {self.model_type}")
+
+        # Pin the surrogate to the TabPFN 2.5 model used in the paper rather
+        # than accepting the package's changing default model version.
+        self.model = TabPFNRegressor.create_default_for_version(
+            ModelVersion.V2_5,
+            device=self.device,
+        )
 
         self.model.fit(x_train, y_train)
         y_val_hat = self.model.predict(x_val)
@@ -272,9 +289,9 @@ if __name__ == '__main__':
         "SEED": 42,
         "DEVICE":1,
         "DATA_DIR": "../data/ds4/usw.csv",
-        "STUDY_DIR": "../exp/exp2_redodo",
-        "LOG_DIR": "../exp/exp2_redodo/ds2/ds2_exp_xx",
-        'MODEL_TYPE': 'autotabpfn',
+        "STUDY_DIR": "../exp/exp1",
+        "LOG_DIR": "../exp/exp1/ds1",
+        'MODEL_TYPE': 'tabpfn',
         "N_AUG_SAMPLES": 0,
         "BATCH_SIZE": 1,
         "INPUT_DIM": 3,
@@ -285,7 +302,8 @@ if __name__ == '__main__':
         "MAX_EPOCHS": 1000,
         "LR": 0.0005,
         "WEIGHT_DECAY": 0.0001,
-        "METHOD": "is",
+        "METHOD": "paramopt",
+        "OPT_OBJECTIVE": "target_match",
         "FOR_OPT_PARAMS": [False,False,True],
         "OPT": "SGD",
         "OPT_LR": 0.05,
@@ -295,4 +313,3 @@ if __name__ == '__main__':
 
     TrainingClass = TrainModule(hparam=hparam, modus='random')
     TrainingClass.training()
-    TrainingClass.testing()

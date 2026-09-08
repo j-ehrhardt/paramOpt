@@ -156,8 +156,8 @@ def convert_to_training_table(model_types:list, dataset_ids:list, testset_select
 
 
 if __name__ == '__main__':
-    model_types = ['ff', 'res', 'hres'] #, 'autotabpfn']
-    dataset_ids = ['ds1', 'ds2', 'ds3', 'ds4', 'ds5', 'ds6', 'ds7', 'ds8']
+    model_types = ['ff', 'res', 'hres'] #, 'tabpfn']
+    dataset_ids = ['ds1', 'ds2', 'ds3', 'ds4', 'ds5', 'ds6']
     testset_selections = ['end'] #['start', 'end', 'random']
     metrics = ['mae', 'mse', 'rmse', 'r2']
     seeds = [0, 1, 2, 3, 4, 5, 6, 7]

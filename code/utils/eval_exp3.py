@@ -27,8 +27,8 @@ def pad_samples(sample_list, L):
 def retrieve_optimization_results_same_ds(model_type:str, dataset_id:str, testset_selection:str, optimization_setup:str, paradigm):
     filepath = f'../../exp_hpc/exp3/{dataset_id}/{model_type}/{testset_selection}'
 
-    if paradigm == 'is':
-        filename = f'{model_type}_{dataset_id}_{testset_selection}_0_on_{dataset_id}_{optimization_setup}_is_RMSprop.json'
+    if paradigm == 'paramopt':
+        filename = f'{model_type}_{dataset_id}_{testset_selection}_0_on_{dataset_id}_{optimization_setup}_paramopt_RMSprop.json'
     else:
         filename = f'{model_type}_{dataset_id}_{testset_selection}_0_on_{optimization_setup}_{paradigm}.json'
 
@@ -70,7 +70,7 @@ def retrieve_optimization_results_same_ds(model_type:str, dataset_id:str, testse
 def build_mae_table_per_setup_with_sd(model_type: str, dataset_ids: list[str], testset_selection: str, setups: list[str], paradigms: list[str], ddof: int = 1, decimals: int = 1, format_cells: bool = True, verbose: bool = False):
     """
     Rows: (setup, optimizer)
-    Cols: ds1..ds8
+    Cols: ds1..ds6
 
     Each cell summarizes final-step MAE over sample×run:
       - mean ± sd  (if format_cells=True)
@@ -277,7 +277,11 @@ def plot_optimization_results_same_ds_per_run(
       - aggregate_over_samples=False: curves are (S*R, T) (one curve per sample-run; can be many!)
     """
     mask = np.array(ast.literal_eval(optimization_setup), dtype=bool)
-    paradigm_dict = {'is': 'paramOpt', 'sis': 'beam search', 'us': 'genetic algorithm'}
+    paradigm_dict = {
+        'paramopt': 'paramOpt',
+        'beam_search': 'beam search',
+        'genetic_algorithm': 'genetic algorithm',
+    }
 
     fig, ax = plt.subplots(figsize=(6, 4))
 
@@ -358,9 +362,9 @@ def plot_optimization_results_same_ds_per_run(
 
 if __name__ == '__main__':
 
-    dataset_ids = ['ds1', 'ds3', 'ds5', 'ds4', 'ds6', 'ds8']
+    dataset_ids = ['ds1', 'ds3', 'ds5', 'ds4', 'ds6']
     setups = ['[True, False, False]', '[False, True, False]', '[False, True, True]', '[True, True, True]']
-    paradigms = ['is', 'sis', 'us']
+    paradigms = ['paramopt', 'beam_search', 'genetic_algorithm']
 
     #df = build_mae_table_per_setup_with_sd(model_type='res', dataset_ids=dataset_ids, testset_selection='end', setups=setups, paradigms=paradigms)
 
@@ -374,7 +378,7 @@ if __name__ == '__main__':
     for setup in setups:
         for ds in dataset_ids:
             plot_optimization_results_same_ds_per_run(
-                model_type="autotabpfn",
+                model_type="tabpfn",
                 dataset_id=ds,
                 testset_selection="end",
                 optimization_setup=setup,

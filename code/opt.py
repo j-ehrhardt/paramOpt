@@ -1,10 +1,35 @@
-from model import *
-from utils import *
 from tqdm import tqdm
-from data import *
-
 import random
 import copy
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+from data.usw_data_loader import DataModuleUsw
+from model.net import load_model
+
+
+OBJECTIVE_TARGET_MATCH = 'target_match'
+OBJECTIVE_MAXIMIZE = 'maximize'
+VALID_OBJECTIVES = {OBJECTIVE_TARGET_MATCH, OBJECTIVE_MAXIMIZE}
+METHOD_ALIASES = {'is': 'paramopt', 'sis': 'beam_search', 'us': 'genetic_algorithm'}
+
+
+def normalize_method(method):
+    """Return public method names while accepting legacy result configurations."""
+    return METHOD_ALIASES.get(method, method)
+
+
+def objective_loss(loss, prediction, target, objective):
+    """Return the scalar minimisation objective shared by all search methods."""
+    if objective == OBJECTIVE_MAXIMIZE:
+        return -prediction.mean()
+    if objective == OBJECTIVE_TARGET_MATCH:
+        if target is None:
+            raise ValueError('target_match optimization requires a target quality.')
+        return loss(prediction.reshape(-1), target.to(prediction.device).reshape(-1))
+    raise ValueError(f'Unknown optimization objective: {objective}')
 
 
 class GeneticAlgorithm:
@@ -23,6 +48,7 @@ class GeneticAlgorithm:
         self.swap_mutation_rate = 0.2
 
         self.loss = nn.MSELoss()
+        self.objective = hparam.get('OPT_OBJECTIVE', OBJECTIVE_TARGET_MATCH)
 
     def init_individual(self, x_in, opt_vars, lower_bound=-1, upper_bound=1, method='random'):
         individual = x_in[:]
@@ -112,8 +138,8 @@ class GeneticAlgorithm:
             y_hat2 = self.model(t_child2)
 
             # losses stay on device, tolist() will move them to CPU implicitly
-            y_loss1 = self.loss(y_hat1, y_gt).detach().tolist()
-            y_loss2 = self.loss(y_hat2, y_gt).detach().tolist()
+            y_loss1 = objective_loss(self.loss, y_hat1, y_gt, self.objective).detach().tolist()
+            y_loss2 = objective_loss(self.loss, y_hat2, y_gt, self.objective).detach().tolist()
 
             x_loss1 = self.loss(t_child1, x_gt).detach().tolist()
             x_loss2 = self.loss(t_child2, x_gt).detach().tolist()
@@ -150,6 +176,7 @@ class BeamSearch:
         self.model = load_model(self.hparam['MODEL_DIR'], model_type) if model is None else model
         if 'tabpfn' not in model_type: self.model.eval()
         self.loss = nn.MSELoss()
+        self.objective = hparam.get('OPT_OBJECTIVE', OBJECTIVE_TARGET_MATCH)
 
     def init_beam(self, x_in):
         # set beam parameters
@@ -178,7 +205,7 @@ class BeamSearch:
 
                 # Evaluate the candidate using the model
                 y_hat = self.model(new_candidate)
-                new_score = self.loss(y_gt, y_hat).item()
+                new_score = objective_loss(self.loss, y_hat, y_gt, self.objective).item()
 
                 # Add the new candidate and its score to the new beam
                 new_beam.append((new_candidate, new_score))
@@ -191,7 +218,7 @@ class BeamSearch:
         x_hat = beam[0][0]
         x_loss = self.loss(x_hat, x_gt)#.item()
         y_hat = self.model(x_hat)
-        y_loss = self.loss(y_hat[0], y_gt[0])#.item()
+        y_loss = objective_loss(self.loss, y_hat, y_gt, self.objective)
 
         return beam, x_loss, y_loss, x_hat, y_hat
 
@@ -204,6 +231,11 @@ class ParamOpt:
         if 'tabpfn' not in self.model_type: self.model.eval()
         self.loss = nn.MSELoss()
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.objective = hparam.get('OPT_OBJECTIVE', OBJECTIVE_TARGET_MATCH)
+        if self.objective not in VALID_OBJECTIVES:
+            raise ValueError(
+                f"OPT_OBJECTIVE must be one of {sorted(VALID_OBJECTIVES)}, got {self.objective!r}."
+            )
 
         self.min_bound, self.max_bound = self.init_observer(hparam)
         #print(f'min bound {self.min_bound}, max bound {self.max_bound}')
@@ -254,54 +286,52 @@ class ParamOpt:
             y_t = y_t.unsqueeze(1)  # (N,1)
         return y_t
 
-    def finite_diff_approx(self, x_guess, y_gt, epsilon):
+    def finite_diff_approx(self, x_guess, y_target, opt_vars, epsilon):
+        """Estimate one gradient component per optimised input feature."""
         grads = []
 
-        for i, t in enumerate(x_guess):
-            if not t.requires_grad:
+        for i, optimise in enumerate(opt_vars):
+            if not optimise:
                 grads.append(0.0)
                 continue
 
             # +epsilon
-            plus = [ti.clone().detach() for ti in x_guess]
-            plus[i] = plus[i] + epsilon
-            x_plus = torch.cat(plus, dim=0).unsqueeze(0)
+            x_plus = x_guess.clone().detach()
+            x_plus[0, i] += epsilon
             y_plus = self.predict_tabpfn(x_plus)
-            loss_plus = self.loss(y_plus.squeeze(0), y_gt).item()
+            loss_plus = objective_loss(self.loss, y_plus.squeeze(0), y_target, self.objective).item()
 
             # -epsilon
-            minus = [ti.clone().detach() for ti in x_guess]
-            minus[i] = minus[i] - epsilon
-            x_minus = torch.cat(minus, dim=0).unsqueeze(0)
+            x_minus = x_guess.clone().detach()
+            x_minus[0, i] -= epsilon
             y_minus = self.predict_tabpfn(x_minus)
-            loss_minus = self.loss(y_minus.squeeze(0), y_gt).item()
+            loss_minus = objective_loss(self.loss, y_minus.squeeze(0), y_target, self.objective).item()
 
             grads.append((loss_plus - loss_minus) / (2.0 * epsilon))
         return grads
 
-    def grad_update(self, x_guess, grads, lr):
+    def grad_update(self, x_guess, grads, opt_vars, lr):
         with torch.no_grad():
-            for idx, (x_var, grad) in enumerate(zip(x_guess, grads)):
-                if x_var.requires_grad:
-                    x_var.sub_(lr * torch.tensor(grad, dtype=x_var.dtype))
-                    #x_var.add_(lr * torch.tensor(grad, dtype=x_var.dtype))
-
-                    # when using observer
-                    x_var.clamp_(min=self.min_bound[idx], max=self.max_bound[idx])
+            for idx, (optimise, grad) in enumerate(zip(opt_vars, grads)):
+                if optimise:
+                    x_guess[0, idx].sub_(lr * torch.tensor(grad, dtype=x_guess.dtype))
+                    x_guess[0, idx].clamp_(min=self.min_bound[idx], max=self.max_bound[idx])
         return x_guess
 
-    def step(self, x_guess, x_gt, y_gt, opt_vars):
+    def step(self, x_guess, x_gt, y_target, opt_vars):
         if 'tabpfn' in self.model_type:
-            x_guess, x_gt, y_gt, y_gt = x_guess.to('cpu'), x_gt.to('cpu'), y_gt.to('cpu'), y_gt.to('cpu')
+            x_guess, x_gt = x_guess.to('cpu'), x_gt.to('cpu')
+            if y_target is not None:
+                y_target = y_target.to('cpu')
 
-            grads = self.finite_diff_approx(x_guess, y_gt, epsilon=1e0)
-            x_guess = self.grad_update(x_guess, grads, lr=1e-3)
+            grads = self.finite_diff_approx(x_guess, y_target, opt_vars, epsilon=1e0)
+            x_guess = self.grad_update(x_guess, grads, opt_vars, lr=self.hparam['OPT_LR'])
             y_hat = self.predict_tabpfn(x_guess)
 
-            loss_y = self.loss(y_hat.squeeze(0), y_gt)
+            loss_y = objective_loss(self.loss, y_hat.squeeze(0), y_target, self.objective)
             loss_x = self.loss(x_guess, x_gt)
 
-            x_guess, x_gt, y_gt, y_hat = x_guess.to(self.device), x_gt.to(self.device), y_gt.to(self.device), y_hat.to(self.device)
+            x_guess, x_gt, y_hat = x_guess.to(self.device), x_gt.to(self.device), y_hat.to(self.device)
         else:
             x_guess = [param.clone().detach().requires_grad_(True) for param in x_guess.squeeze(0)]
 
@@ -315,7 +345,8 @@ class ParamOpt:
             if self.model_type == 'hres' or self.model_type == 'mdn':
                 y_hat = y_hat[:, 0]
 
-            loss_elem = self.loss(y_hat, y_gt.unsqueeze(0))
+            target = y_target.unsqueeze(0) if y_target is not None else None
+            loss_elem = objective_loss(self.loss, y_hat, target, self.objective)
             loss_elem.backward()
 
             optimizer.step()
@@ -328,7 +359,11 @@ class ParamOpt:
 
             x_guess = torch.stack(x_guess).unsqueeze(0)
 
-            loss_y = self.loss(y_hat.squeeze(dim=0), y_gt)  # squeeze gt because batch size 1
+            with torch.no_grad():
+                y_hat = self.model(x_guess)
+                if self.model_type == 'hres' or self.model_type == 'mdn':
+                    y_hat = y_hat[:, 0]
+                loss_y = objective_loss(self.loss, y_hat, target, self.objective)
             loss_x = self.loss(x_guess.squeeze(), x_gt.squeeze())  # squeeze gt because batch size 1
 
         return loss_x.detach(), loss_y.detach(), x_guess.detach(), y_hat.detach()
@@ -341,53 +376,59 @@ class OptModule():
         self.model_type = hparam['MODEL_TYPE']
         self.loss = nn.MSELoss()
         self.threshold = hparam['OPT_THRESHOLD']
-        self.method = hparam['METHOD']
+        self.method = normalize_method(hparam['METHOD'])
+        self.objective = hparam.get('OPT_OBJECTIVE', OBJECTIVE_TARGET_MATCH)
+        if self.objective not in VALID_OBJECTIVES:
+            raise ValueError(
+                f"OPT_OBJECTIVE must be one of {sorted(VALID_OBJECTIVES)}, got {self.objective!r}."
+            )
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         self.GA = GeneticAlgorithm(self.hparam, self.model, self.model_type)
         self.BS = BeamSearch(self.hparam, self.model, self.model_type)
         self.GS = ParamOpt(self.hparam, self.model, self.model_type)
 
-    def find_params(self, x_guess, y_guess, x_gt, y_gt, opt_vars, lr=None):
+    def find_params(self, x_guess, x_gt, y_gt=None, opt_vars=None, lr=None):
         """
         This function holds the core functionalities for reconstructing paramters.
         As guesses only tensors of dim1 are allowed ... no batches.
 
-        :param x_guess, y_guess: guesses for reconstruction standard at 0, other initializations possible.
-        :param x_gt, y_gt: ground truths for plotting.
+        :param x_guess: starting machine-parameter vector.
+        :param x_gt: reference vector used only for reconstruction metrics.
+        :param y_gt: required target quality for ``target_match``; omit for ``maximize``.
         :param opt_vars: Is a list of booleans that describes which input parameters to optimize.
-        :param method: Describes whether uninformed search (us), semi-informed search (sis) or gradient-based search (is) should be used.
+        :param method: ``paramopt``, ``beam_search``, or ``genetic_algorithm``.
         """
 
         if x_guess.dim() == 1:
             x_guess = x_guess.unsqueeze(0)
             x_gt = x_gt.unsqueeze(0)
-            y_guess = y_guess.unsqueeze(0)
-            y_gt = y_gt.unsqueeze(0)
+            if y_gt is not None:
+                y_gt = y_gt.unsqueeze(0)
 
         #x_guess = x_guess.to(self.device).clone().detach().requires_grad_(True) # detach and reattach
 
         x_guess = x_guess.to(self.device)
 
-        if self.method == "is":
+        if self.method == "paramopt":
             x_guess = x_guess.clone().detach().requires_grad_(True)
         else:
             x_guess = x_guess.clone().detach()
 
-        y_guess = y_guess.to(self.device)
         x_gt = x_gt.to(self.device)
-        y_gt = y_gt.to(self.device)
+        if y_gt is not None:
+            y_gt = y_gt.to(self.device)
 
         # init methods
-        if self.method == "us": # uninformed search
+        if self.method == "genetic_algorithm":
             print(f'genetic algorithm')
             x_in = x_guess.squeeze().tolist()
             self.GA.init_population(x_in=x_in, opt_vars=opt_vars)
-        if self.method == "sis": # semi-informed search
+        if self.method == "beam_search":
             print(f'beamsearch')
             beam = self.BS.init_beam(x_in=x_guess)
-        if self.method == "is": # informed search
-            print(f'paramopt | optimizer {self.hparam["OPT"]}')
+        if self.method == "paramopt":
+            print(f'paramopt | objective {self.objective} | optimizer {self.hparam["OPT"]}')
 
         prediction_variance_runs = 8 #16 TODO change back to 16
         modus = 'input_variance' # 'dropout_variance', 'input_variance'
@@ -435,15 +476,20 @@ class OptModule():
 
 
                 while consecutive_cycles < max_consecutive_cycles and n_cycles < max_cycles:
-                    if self.method == "us":  # uninformed search
+                    if self.method == "genetic_algorithm":
                         x_loss, y_loss, x_guess, y_hat = self.GA.step(x_gt=x_gt, y_gt=y_gt, i=n_cycles)
                         x_guess = torch.tensor(x_guess, dtype=torch.float32, device=self.device).unsqueeze(0)
 
-                    if self.method == "sis":  # semi-informed search
+                    if self.method == "beam_search":
                         beam, x_loss, y_loss, x_guess, y_hat = self.BS.step(beam=beam, x_gt=x_gt, y_gt=y_gt)
 
-                    if self.method == "is": #  informed search
-                        x_loss, y_loss, x_guess, y_hat = self.GS.step(x_guess=x_guess, x_gt=x_gt, y_gt=y_gt, opt_vars=opt_vars)
+                    if self.method == "paramopt":
+                        x_loss, y_loss, x_guess, y_hat = self.GS.step(
+                            x_guess=x_guess,
+                            x_gt=x_gt,
+                            y_target=y_gt,
+                            opt_vars=opt_vars,
+                        )
                         #x_loss, y_loss, x_guess, y_hat = x_loss.detach().tolist(), y_loss.detach.tolist(), x_guess.detach().tolist(), y_hat.detach().tolist()
                         x_loss, y_loss, x_guess, y_hat = x_loss.detach(), y_loss.detach(), x_guess.detach(), y_hat.detach()
 

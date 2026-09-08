@@ -43,7 +43,7 @@ def xy_inverse_transform(hparam, x, y):
 def init_hparam(dataset='ds1', model_type='res', seed=1, experiment_id=1, data_batch_size=1,
                 model_hidden_dim=128,
                 model_n_layers=8, model_dropout=0.2, model_max_epochs=500, model_lr=5e-4, model_wd=1e-4,
-                opt_method='is',
+                opt_method='paramopt',
                 opt_params=[True, False, False], opt_optimizer='SGD', opt_lr=0.05, opt_momentum=0.1,
                 opt_threshold=0.1,
                 opt_max_cycles=1000, opt_max_con_cycles=200, opt_patience=25):
@@ -69,6 +69,7 @@ def init_hparam(dataset='ds1', model_type='res', seed=1, experiment_id=1, data_b
     hparam['WEIGHT_DECAY'] = model_wd
 
     hparam['METHOD'] = opt_method
+    hparam['OPT_OBJECTIVE'] = 'target_match'
 
     hparam['FOR_OPT_PARAMS'] = opt_params
     hparam['OPT'] = opt_optimizer

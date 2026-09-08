@@ -1,8 +1,19 @@
 import os
+import torch
 
 from train import *
 from opt import *
 import json
+
+
+def to_jsonable(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, dict):
+        return {key: to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(item) for item in value]
+    return value
 
 
 def init_guesses(x_gt, mask, method='zeros'):
@@ -24,8 +35,8 @@ def init_guesses(x_gt, mask, method='zeros'):
 def exp_run(hparam):
     train_class = TrainModule(hparam=hparam, modus='random', scaling=False)
 
-    _, mse_test, var_test = train_class.training()
-    _, model = train_class.testing()
+    training_results = train_class.training()
+    model = train_class.model
 
     data_module = DataModuleUsw(hparam=hparam, modus='random', scaling=False)
     test_data = data_module.get_test_dataloader()
@@ -44,12 +55,18 @@ def exp_run(hparam):
                 opt_class = OptModule(hparam=hparam, model=model)
                 x_guess = init_guesses(x_gt=x_gt, mask=scenario, method='zeros')
 
-                x_hat, y_hat, x_loss, y_loss = opt_class.find_params(x_guess=x_guess, y_guess=y_gt, x_gt=x_gt, y_gt=y_gt, opt_vars=scenario) # TODO HERE ADDITIONAL FUNCTION OUTPUT FOR TIME SERIES
+                x_gt_history, y_gt_history, x_hat_history, y_hat_history = opt_class.find_params(
+                    x_guess=x_guess,
+                    x_gt=x_gt,
+                    y_gt=y_gt,
+                    opt_vars=scenario,
+                )
                 results[str(scenario)][i] = {
                     'x_gt': x_gt.tolist(),
-                    'x_hat': x_hat.tolist(),
+                    'x_hat': x_hat_history,
                     'y_gt': y_gt.tolist(),
-                    'y_hat': y_hat.tolist()
+                    'y_hat': y_hat_history,
+                    'training_test_loss': training_results['TEST_LOSSES_AVG'],
                 }
                 i+= 1
 
@@ -58,7 +75,7 @@ def exp_run(hparam):
     save_path = f'../results/{hparam["MODEL_TYPE"]}/{hparam["DS_ID"]}'
     os.makedirs(save_path, exist_ok=True)
     with open(f'{save_path}/results.json', 'w') as f:
-        json.dump(results, f, indent=4)
+        json.dump(to_jsonable(results), f, indent=4)
 
 
 if __name__ == '__main__':
@@ -70,7 +87,7 @@ if __name__ == '__main__':
         "DATA_DIR": "../data/ds1/usw.csv",
         "STUDY_DIR": "../exp/exp1",
         "LOG_DIR": "../exp/exp1/ds1",
-        'MODEL_TYPE': 'tabpfn',  # res, hres, mdn, ff, tabpfn, autotabpfn, tabicl
+        'MODEL_TYPE': 'tabpfn',  # res, hres, mdn, ff, tabpfn
         "N_AUG_SAMPLES": 0,
         "BATCH_SIZE": 4,
         "INPUT_DIM": 3,
@@ -82,7 +99,8 @@ if __name__ == '__main__':
         "LR": 0.0005,
         "WEIGHT_DECAY": 0.0001,
 
-        "METHOD": "is",
+        "METHOD": "paramopt",
+        "OPT_OBJECTIVE": "target_match",
 
         "FOR_OPT_PARAMS": [True, False, False],
         "OPT": "SGD",
@@ -97,7 +115,7 @@ if __name__ == '__main__':
     #exp_run(hparam=hparam)
 
 
-    for model in ['ff', 'res', 'mdn', 'hres', 'tabpfn', 'autotabpfn']:
+    for model in ['ff', 'res', 'mdn', 'hres', 'tabpfn']:
         hparam['MODEL_TYPE'] = model
 
         hparam = hparam.copy()

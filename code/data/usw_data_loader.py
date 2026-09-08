@@ -65,11 +65,11 @@ class DataModuleUsw(DataModule):
 if __name__ == "__main__":
     hparam = {
         "ID": "ds1_hparam",
-        "DS_ID": "ds8",
+        "DS_ID": "ds6",
         "SEED": 42,
-        "DATA_DIR": "../../data/ds8/usw.csv",
+        "DATA_DIR": "../../data/ds6/usw.csv",
         "STUDY_DIR": "../../exp/exp1",
-        "LOG_DIR": "../../exp/exp1/ds8",
+        "LOG_DIR": "../../exp/exp1/ds6",
         "K_FOLDS": 4,
         "N_AUG_SAMPLES": 0,
         "BATCH_SIZE": 16,
@@ -84,7 +84,8 @@ if __name__ == "__main__":
         "LR": 0.005,
         "WEIGHT_DECAY": 0.0001,
 
-        "METHOD": "is",
+        "METHOD": "paramopt",
+        "OPT_OBJECTIVE": "target_match",
         "FOR_OPT_PARAMS": [False, False, True],
         "OPT": "SGD",
         "OPT_LR": 0.05,

@@ -1,0 +1,13 @@
+# Create a fresh Python 3.12 environment before installing these dependencies.
+# TabPFN 8.5.0 provides the V2_5 model selected by code/train.py.
+torch==2.5.1
+tabpfn==8.5.0
+
+numpy==2.2.1
+pandas==2.2.3
+scikit-learn==1.6.1
+scipy==1.15.1
+matplotlib==3.10.0
+pillow==11.1.0
+tqdm==4.67.1
+joblib==1.4.2

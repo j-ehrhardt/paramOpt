@@ -5,12 +5,6 @@
 
 # paramOpt
 
-This is the repository to our paper
-
-> **Using Gradient-based Optimization for Estimating Process Parameters — A Case Study in Ultrasonic Welding**  
-> Jonas Ehrhardt, René Heesch, Björn Ludwig, Sophie Arweiler, Moritz Liesegang, Oliver Niggemann  
-> [Paper link coming soon]()
-
 **paramOpt** is a gradient-based optimization framework for estimating process parameters from desired product quality specifications.
 
 ![teaser](figures/teaser.png)
@@ -34,6 +28,13 @@ The trained neural network is kept fixed. Instead of optimizing the network weig
 
 This makes it possible to exploit the learned functional dependency between process parameters and quality characteristics while searching efficiently in continuous parameter spaces.
 
+paramOpt supports two optimization objectives through `OPT_OBJECTIVE`:
+
+- `target_match` minimizes the prediction error against a requested quality target.
+- `maximize` maximizes the surrogate's predicted quality directly. This is the open-loop formulation used to propose promising parameter combinations for physical validation.
+
+In both modes, only parameters selected by `FOR_OPT_PARAMS` are changed and each update is projected onto the parameter range observed in the training data.
+
 ## Method
 
 The repository includes two variants of paramOpt: $paramOpt_{wb}$ and $paramOpt_{bb}$. 
@@ -46,23 +47,25 @@ For locally available models with access to weights and gradients, paramOpt dire
 
 For models where gradients are not available, for example hosted foundation models, paramOpt approximates gradients using finite differences. This enables input optimization even when model internals are inaccessible.
 
+The black-box implementation uses the TabPFN 2.5 regressor. The environment installs the `tabpfn` package and the code explicitly selects its `V2_5` model version, so it does not silently move to the package's default model. TabPFN downloads its model weights on first use; these are cached outside this repository and are not tracked here. Access to the TabPFN 2.5 weights requires accepting Prior Labs' model license.
+
+## Setup
+
+Create a fresh Python 3.12 environment and install the project dependencies with `python -m pip install -r requirements.txt`. TabPFN can run on CPU for these small datasets, although GPU inference is generally faster. If a specific CUDA build is required, install the matching PyTorch 2.5.1 wheel first, then install the remaining requirements.
+
 ## Case Study: Ultrasonic Welding
 
 We evaluate paramOpt on process parameter estimation for Ultrasonic Welding.The datasets contain six real-world Design of Experiment studies from two welding processes: *Continuous Roll Seam Ultrasonic Welding* and *Torsional Ultrasonic Welding*.
 
 ## Experiments
 
-The paper evaluates paramOpt in five experiments:
+The paper evaluates paramOpt in three experiments:
 
-1. **Forward model fitting**: We compare neural network architectures and a tabular foundation model for learning the mapping from process parameters to lap shear strength.
+1. **Search-baseline comparison**: We benchmark paramOpt against a genetic algorithm and beam search when reconstructing machine parameters for a requested quality target.
 
-2. **Optimizer comparison**: We evaluate different gradient-based optimizers for the second step of paramOpt, including SGD, ASGD, SGD with Nesterov momentum, Adam, and RMSprop.
+2. **White-box versus black-box optimization**: We compare exact gradients from backpropagation with finite-difference approximations using a TabPFN surrogate.
 
-3. **Comparison with search baselines**: We benchmark paramOpt against uninformed and heuristic search methods, including a genetic algorithm and beam search.
-
-4. **White-box vs. black-box optimization**: We compare exact gradients from backpropagation with finite-difference gradient approximations.
-
-5. **Real-world validation**: We validate an optimized parameter set experimentally in a Continuous Roll Seam Ultrasonic Welding setup.
+3. **Real-world validation**: We validate an open-loop optimized parameter set experimentally in a Continuous Roll Seam Ultrasonic Welding setup.
 
 Overall, the results show that gradient-based parameter estimation can converge faster than search-based baselines and can identify non-intuitive parameter combinations that outperform conventionally estimated process parameters.
 

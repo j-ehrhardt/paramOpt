@@ -27,8 +27,8 @@ def pad_samples(sample_list, L):
 def retrieve_optimization_results_same_ds(model_type:str, dataset_id:str, testset_selection:str, optimization_setup:str, paradigm):
     filepath = f'../../exp_hpc/exp3/{dataset_id}/{model_type}/{testset_selection}'
 
-    if paradigm == 'is':
-        filename = f'{model_type}_{dataset_id}_{testset_selection}_0_on_{dataset_id}_{optimization_setup}_is_RMSprop.json'
+    if paradigm == 'paramopt':
+        filename = f'{model_type}_{dataset_id}_{testset_selection}_0_on_{dataset_id}_{optimization_setup}_paramopt_RMSprop.json'
     else:
         filename = f'{model_type}_{dataset_id}_{testset_selection}_0_on_{optimization_setup}_{paradigm}.json'
 
@@ -70,7 +70,7 @@ def retrieve_optimization_results_same_ds(model_type:str, dataset_id:str, testse
 def build_mae_table_per_setup_with_sd(model_type: str, dataset_ids: list[str], testset_selection: str, setups: list[str], paradigms: list[str], ddof: int = 1, decimals: int = 1, format_cells: bool = True, verbose: bool = False):
     """
     Rows: (setup, optimizer)
-    Cols: ds1..ds8
+    Cols: ds1..ds6
 
     Each cell summarizes final-step MAE over sample×run:
       - mean ± sd  (if format_cells=True)
@@ -139,14 +139,14 @@ def build_mae_table_per_setup_with_sd(model_type: str, dataset_ids: list[str], t
 
 if __name__ == '__main__':
 
-    dataset_ids = ['ds1', 'ds3', 'ds5', 'ds4', 'ds6', 'ds8']
+    dataset_ids = ['ds1', 'ds3', 'ds5', 'ds4', 'ds6']
     setups = ['[True, False, False]', '[False, True, False]', '[False, True, True]', '[True, True, True]']
-    paradigms = ['is'] #, 'sis', 'us']
+    paradigms = ['paramopt'] #, 'beam_search', 'genetic_algorithm']
 
     df1 = build_mae_table_per_setup_with_sd(model_type='ff', dataset_ids=dataset_ids, testset_selection='end', setups=setups, paradigms=paradigms)
     df2 = build_mae_table_per_setup_with_sd(model_type='res', dataset_ids=dataset_ids, testset_selection='end', setups=setups, paradigms=paradigms)
     df3 = build_mae_table_per_setup_with_sd(model_type='hres', dataset_ids=dataset_ids, testset_selection='end', setups=setups, paradigms=paradigms)
-    df4 = build_mae_table_per_setup_with_sd(model_type='autotabpfn', dataset_ids=dataset_ids, testset_selection='end', setups=setups, paradigms=paradigms)
+    df4 = build_mae_table_per_setup_with_sd(model_type='tabpfn', dataset_ids=dataset_ids, testset_selection='end', setups=setups, paradigms=paradigms)
 
 
     with pd.option_context("display.max_rows", None, "display.max_columns", None, "display.width", 200, "display.expand_frame_repr", False):
@@ -156,6 +156,5 @@ if __name__ == '__main__':
             print(df2)
             print('========hres========')
             print(df3)
-            print('========autotabpfn========')
+            print('========tabpfn========')
             print(df4)
-
