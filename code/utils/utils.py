@@ -46,7 +46,8 @@ def init_hparam(dataset='ds1', model_type='res', seed=1, experiment_id=1, data_b
                 opt_method='paramopt',
                 opt_params=[True, False, False], opt_optimizer='SGD', opt_lr=0.05, opt_momentum=0.1,
                 opt_threshold=0.1,
-                opt_max_cycles=1000, opt_max_con_cycles=200, opt_patience=25):
+                opt_max_cycles=1000, opt_max_con_cycles=200, opt_early_stop=False,
+                opt_restarts=1, opt_patience=25):
     hparam = {}
 
     hparam['ID'] = f'{dataset}_{model_type}_{seed}'
@@ -78,6 +79,8 @@ def init_hparam(dataset='ds1', model_type='res', seed=1, experiment_id=1, data_b
     hparam['OPT_THRESHOLD'] = opt_threshold
     hparam['OPT_MAX_CYCLES'] = opt_max_cycles
     hparam['OPT_MAX_CON_CYCLES'] = opt_max_con_cycles
+    hparam['OPT_EARLY_STOP'] = opt_early_stop
+    hparam['OPT_RESTARTS'] = opt_restarts
     hparam['OPT_PATIENCE'] = opt_patience
 
     return hparam
