@@ -33,7 +33,7 @@ paramOpt supports two optimization objectives through `OPT_OBJECTIVE`:
 - `target_match` minimizes the prediction error against a requested quality target.
 - `maximize` maximizes the surrogate's predicted quality directly. This is the open-loop formulation used to propose promising parameter combinations for physical validation.
 
-In both modes, only parameters selected by `FOR_OPT_PARAMS` are changed and each update is projected onto the parameter range observed in the training data.
+In both modes, only parameters selected by `FOR_OPT_PARAMS` are changed. Every method is projected onto the same configured physical bounds; when no bounds are supplied, paramOpt deterministically uses the bounds of the complete cleaned DoE.
 
 ## Method
 
@@ -65,9 +65,20 @@ The paper evaluates paramOpt in three experiments:
 
 2. **White-box versus black-box optimization**: We compare exact gradients from backpropagation with finite-difference approximations using a TabPFN surrogate.
 
-3. **Real-world validation**: We validate an open-loop optimized parameter set experimentally in a Continuous Roll Seam Ultrasonic Welding setup.
+3. **Real-world validation**: The paper reports an experimentally validated open-loop parameter set in a Continuous Roll Seam Ultrasonic Welding setup. The repository can generate open-loop proposals, but physical validation requires a welding experiment and is not represented as a software-only result.
 
 Overall, the results show that gradient-based parameter estimation can converge faster than search-based baselines and can identify non-intuitive parameter combinations that outperform conventionally estimated process parameters.
+
+### Paper protocol
+
+The computational paper suites use 1,000 optimisation steps, every test-set sample, the four parameter subsets reported in Tables 2 and 3, and eight independent seeds. They write machine-readable results below `results/paper/` and can be launched from the repository root:
+
+```bash
+python code/eval.py --suite baselines
+python code/eval.py --suite gradients
+```
+
+The repository deliberately retains the supplied datasets unchanged. See [PAPER_PROTOCOL.md](PAPER_PROTOCOL.md) for the exact executable protocol and the remaining data-provenance limitation around the paper's physical validation claim.
 
 The following GIFs illustrate the second optimization step of paramOpt (gt = ground truth, rec = estimated parameter values, guess = optimization starting value).
 
